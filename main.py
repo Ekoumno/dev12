@@ -10,7 +10,7 @@ def main(page: ft.Page):
     page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
     page.theme_mode = ft.ThemeMode.DARK
 
-    # Variables de session
+    # Variables de session propres à CHAQUE joueur
     mon_pseudo = ""
     mon_code_salon = ""
     mon_secret = None
@@ -22,36 +22,57 @@ def main(page: ft.Page):
     input_pseudo = ft.TextField(label="Ton Pseudo", width=250, text_align=ft.TextAlign.CENTER)
     input_salon = ft.TextField(label="Code du Salon", width=250, text_align=ft.TextAlign.CENTER)
     input_secret = ft.TextField(label="Nombre secret (1-1000)", keyboard_type=ft.KeyboardType.NUMBER, password=True, width=200, text_align=ft.TextAlign.CENTER)
-    texte_attente = ft.Text("En attente de l'adversaire...", size=14, color="grey", italic=True)
+    texte_attente = ft.Text("En attente que l'adversaire valide son secret...", size=14, color="grey", italic=True)
     
     titre_jeu = ft.Text("🎯 Devine son nombre !", size=24, weight=ft.FontWeight.BOLD, color="blueaccent")
     info_salon_text = ft.Text("", size=12, color="grey")
     champ_saisie_jeu = ft.TextField(label="Ta proposition", keyboard_type=ft.KeyboardType.NUMBER, width=200, text_align=ft.TextAlign.CENTER)
     resultat_indice = ft.Text("", size=16, weight=ft.FontWeight.W_500)
     compteur_text = ft.Text("Tentatives : 0", size=12, color="grey")
+    btn_recommencer = ft.ElevatedButton("Nouvelle Partie", on_click=lambda e: recommencer_partie(), bgcolor="green", visible=False)
 
-    # --- ROUTAGE RÉSEAU SÉCURISÉ ---
+    # --- ROUTAGE RÉSEAU SIMULTANÉ (PubSub) ---
     def sur_message_recu(e):
         nonlocal nom_adversaire, secret_adversaire
         try:
-            # Flet envoie l'événement, le contenu est dans e.data
             data = json.loads(e.data)
             
-            # On filtre pour s'assurer que c'est le même salon et pas notre propre message
-            if data["salon"] != mon_code_salon or data["expediteur"] == mon_pseudo:
+            # On vérifie qu'on est bien dans le même salon de jeu
+            if data["salon"] != mon_code_salon:
                 return
 
+            # Cas 1 : L'adversaire partage son secret
             if data["type"] == "PARTAGE_SECRET":
-                nom_adversaire = data["expediteur"]
-                secret_adversaire = int(data["valeur"])
-                
-                # Si les deux secrets sont configurés, le duel s'ouvre
-                if mon_secret is not None:
-                    page.clean()
-                    afficher_ecran_jeu()
+                if data["expediteur"] != mon_pseudo:
+                    nom_adversaire = data["expediteur"]
+                    secret_adversaire = int(data["valeur"])
+                    
+                    # Si moi aussi j'ai déjà configuré mon secret, on lance le duel !
+                    if mon_secret is not None:
+                        page.clean()
+                        afficher_ecran_jeu()
+                        page.update()
+
+            # Cas 2 : L'adversaire a gagné la partie
+            elif data["type"] == "FIN_PARTIE":
+                if data["gagnant"] != mon_pseudo:
+                    resultat_indice.value = f"💥 Perdu ! {data['gagnant']} a trouvé en {data['coups']} coups !"
+                    resultat_indice.color = "red"
+                    btn_deviner.disabled = True
+                    champ_saisie_jeu.disabled = True
+                    btn_recommencer.visible = True
                     page.update()
-        except:
-            pass
+
+            # Cas 3 : L'adversaire demande à rejouer
+            elif data["type"] == "RESTART":
+                if data["expediteur"] != mon_pseudo:
+                    reinitialiser_variables_locales()
+                    page.clean()
+                    afficher_ecran_choix_secret()
+                    page.update()
+
+        except Exception as ex:
+            print(f"Erreur décodage pubsub: {ex}")
 
     def valider_connexion(e):
         nonlocal mon_pseudo, mon_code_salon
@@ -60,7 +81,7 @@ def main(page: ft.Page):
         mon_pseudo = input_pseudo.value
         mon_code_salon = input_salon.value
         
-        # Abonnement officiel au serveur de communication global de Flet
+        # Abonnement immédiat aux ondes du salon sur Render
         page.pubsub.subscribe(sur_message_recu)
         
         page.clean()
@@ -73,29 +94,30 @@ def main(page: ft.Page):
             return
         mon_secret = int(input_secret.value)
         
-        # Enpaquetage des données de session
+        # On envoie notre secret sur le réseau PubSub
         message = {
             "salon": mon_code_salon,
             "type": "PARTAGE_SECRET",
             "expediteur": mon_pseudo,
             "valeur": mon_secret
         }
-        # Diffusion sur la brique de communication globale
         page.pubsub.send_all(json.dumps(message))
         
+        # Si l'adversaire n'a pas encore envoyé le sien, on attend patiemment
         if secret_adversaire is None:
             btn_valider_secret.disabled = True
             input_secret.disabled = True
             page.add(texte_attente)
             page.update()
         else:
+            # Si l'adversaire l'avait déjà envoyé, on bascule direct sur l'écran de combat
             page.clean()
             afficher_ecran_jeu()
             page.update()
 
     def verifier_proposition(e):
         nonlocal tentatives
-        if not champ_saisie_jeu.value:
+        if not champ_saisie_jeu.value or secret_adversaire is None:
             return
         
         choix = int(champ_saisie_jeu.value)
@@ -109,24 +131,50 @@ def main(page: ft.Page):
             resultat_indice.value = "📉 C'est PLUS PETIT !"
             resultat_indice.color = "amber"
         else:
+            # On a trouvé le secret de l'adversaire !
             resultat_indice.value = f"🎉 GAGNÉ en {tentatives} coups !"
             resultat_indice.color = "green"
             btn_deviner.disabled = True
-            page.add(ft.ElevatedButton("Nouvelle Partie", on_click=recommencer_partie, bgcolor="green"))
+            champ_saisie_jeu.disabled = True
+            btn_recommencer.visible = True
+            
+            # On informe immédiatement l'adversaire qu'il a perdu
+            message_victoire = {
+                "salon": mon_code_salon,
+                "type": "FIN_PARTIE",
+                "gagnant": mon_pseudo,
+                "coups": tentatives
+            }
+            page.pubsub.send_all(json.dumps(message_victoire))
 
         champ_saisie_jeu.value = ""
         page.update()
 
-    def recommencer_partie(e):
-        nonlocal mon_secret, secret_adversaire, tentatives
+    def reinitialiser_variables_locales():
+        nonlocal mon_secret, secret_adversaire, tentatives, nom_adversaire
         mon_secret = None
         secret_adversaire = None
+        nom_adversaire = "En attente..."
         tentatives = 0
         btn_deviner.disabled = False
-        resultat_indice.value = ""
+        champ_saisie_jeu.disabled = False
         input_secret.disabled = False
+        input_secret.value = ""
         btn_valider_secret.disabled = False
-        champ_saisie_jeu.value = ""
+        resultat_indice.value = ""
+        compteur_text.value = "Tentatives : 0"
+        btn_recommencer.visible = False
+
+    def recommencer_partie():
+        # Signaler à l'autre joueur qu'on relance un match
+        message_restart = {
+            "salon": mon_code_salon,
+            "type": "RESTART",
+            "expediteur": mon_pseudo
+        }
+        page.pubsub.send_all(json.dumps(message_restart))
+        
+        reinitialiser_variables_locales()
         page.clean()
         afficher_ecran_choix_secret()
         page.update()
@@ -135,7 +183,7 @@ def main(page: ft.Page):
     btn_valider_secret = ft.ElevatedButton("Enregistrer mon secret", on_click=valider_secret, bgcolor="green", color="white")
     btn_deviner = ft.ElevatedButton("Valider", on_click=verifier_proposition, bgcolor="blueaccent", color="white")
 
-    # --- CONSTRUCION DES ÉCRANS ---
+    # --- CONSTRUCTION DES ÉCRANS ---
     def afficher_ecran_connexion():
         page.add(
             ft.Container(height=40),
@@ -170,12 +218,14 @@ def main(page: ft.Page):
             ft.Container(height=40),
             champ_saisie_jeu,
             btn_deviner,
-            ft.Container(height=40),
+            ft.Container(height=30),
             resultat_indice,
-            compteur_text
+            compteur_text,
+            ft.Container(height=20),
+            btn_recommencer
         )
 
     afficher_ecran_connexion()
 
-# L'adresse 0.0.0.0 permet d'ouvrir le jeu au monde entier sur le port 8080
+# Lancement officiel de l'application
 ft.app(target=main, view=ft.AppView.WEB_BROWSER, host="0.0.0.0", port=10000)
