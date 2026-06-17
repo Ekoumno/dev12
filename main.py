@@ -31,15 +31,14 @@ def main(page: ft.Page):
     compteur_text = ft.Text("Tentatives : 0", size=12, color="grey")
     btn_recommencer = ft.ElevatedButton("Nouvelle Partie", on_click=lambda e: recommencer_partie(), bgcolor="green", visible=False)
 
-    # --- ROUTAGE RÉSEAU SIMULTANÉ (PubSub) ---
-    def sur_message_recu(e):
+    # --- ROUTAGE RÉSEAU SIMULTANÉ (PubSub par Salon) ---
+    def sur_message_recu(message_brut):
         nonlocal nom_adversaire, secret_adversaire
         try:
-            data = json.loads(e.data)
+            # Sur Flet Web, les données du topic arrivent directement
+            data = json.loads(message_brut)
             
-            # On vérifie qu'on est bien dans le même salon de jeu
-            if data["salon"] != mon_code_salon:
-                return
+            # Plus besoin de vérifier le salon manuellement car le topic gère l'isolation !
 
             # Cas 1 : L'adversaire partage son secret
             if data["type"] == "PARTAGE_SECRET":
@@ -79,10 +78,10 @@ def main(page: ft.Page):
         if not input_pseudo.value or not input_salon.value:
             return
         mon_pseudo = input_pseudo.value
-        mon_code_salon = input_salon.value
+        mon_code_salon = input_salon.value.strip() # Nettoie les espaces
         
-        # Abonnement immédiat aux ondes du salon sur Render
-        page.pubsub.subscribe(sur_message_recu)
+        # S'abonner spécifiquement au CANAL (Topic) du numéro de salon
+        page.pubsub.subscribe_topic(mon_code_salon, sur_message_recu)
         
         page.clean()
         afficher_ecran_choix_secret()
@@ -94,23 +93,23 @@ def main(page: ft.Page):
             return
         mon_secret = int(input_secret.value)
         
-        # On envoie notre secret sur le réseau PubSub
+        # Construire le message
         message = {
-            "salon": mon_code_salon,
             "type": "PARTAGE_SECRET",
             "expediteur": mon_pseudo,
             "valeur": mon_secret
         }
-        page.pubsub.send_all(json.dumps(message))
+        # Envoyer uniquement sur les ondes du salon connecté
+        page.pubsub.send_all_on_topic(mon_code_salon, json.dumps(message))
         
-        # Si l'adversaire n'a pas encore envoyé le sien, on attend patiemment
+        # Si l'adversaire n'a pas encore envoyé le sien, on attend
         if secret_adversaire is None:
             btn_valider_secret.disabled = True
             input_secret.disabled = True
             page.add(texte_attente)
             page.update()
         else:
-            # Si l'adversaire l'avait déjà envoyé, on bascule direct sur l'écran de combat
+            # Si l'adversaire l'avait déjà envoyé, on bascule direct sur le plateau de jeu
             page.clean()
             afficher_ecran_jeu()
             page.update()
@@ -138,14 +137,13 @@ def main(page: ft.Page):
             champ_saisie_jeu.disabled = True
             btn_recommencer.visible = True
             
-            # On informe immédiatement l'adversaire qu'il a perdu
+            # On informe immédiatement l'adversaire via le topic commun
             message_victoire = {
-                "salon": mon_code_salon,
                 "type": "FIN_PARTIE",
                 "gagnant": mon_pseudo,
                 "coups": tentatives
             }
-            page.pubsub.send_all(json.dumps(message_victoire))
+            page.pubsub.send_all_on_topic(mon_code_salon, json.dumps(message_victoire))
 
         champ_saisie_jeu.value = ""
         page.update()
@@ -166,13 +164,12 @@ def main(page: ft.Page):
         btn_recommencer.visible = False
 
     def recommencer_partie():
-        # Signaler à l'autre joueur qu'on relance un match
+        # Signaler sur le salon qu'on relance un match
         message_restart = {
-            "salon": mon_code_salon,
             "type": "RESTART",
             "expediteur": mon_pseudo
         }
-        page.pubsub.send_all(json.dumps(message_restart))
+        page.pubsub.send_all_on_topic(mon_code_salon, json.dumps(message_restart))
         
         reinitialiser_variables_locales()
         page.clean()
@@ -227,6 +224,5 @@ def main(page: ft.Page):
 
     afficher_ecran_connexion()
 
-# Lancement officiel de l'application
-# L'ajout de upload_dir et de la vue en temps réel force Render à tout centraliser
+# Lancement officiel adapté à Render
 ft.app(target=main, view=ft.AppView.WEB_BROWSER, host="0.0.0.0", port=10000)
