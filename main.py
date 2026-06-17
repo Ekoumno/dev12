@@ -228,4 +228,5 @@ def main(page: ft.Page):
     afficher_ecran_connexion()
 
 # Lancement officiel de l'application
-ft.app(target=main, view=ft.AppView.WEB_BROWSER, host="0.0.0.0", port=10000)
+# L'ajout de upload_dir et de la vue en temps réel force Render à tout centraliser
+ft.app(target=main, view=ft.AppView.WEB_BROWSER, host="0.0.0.0", port=10000, web_renderer=ft.WebRenderer.HTML)
