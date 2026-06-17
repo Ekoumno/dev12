@@ -1,5 +1,6 @@
 import flet as ft
 import json
+import os
 
 def main(page: ft.Page):
     # Configuration stricte format Smartphone
@@ -223,6 +224,4 @@ def main(page: ft.Page):
         )
 
     afficher_ecran_connexion()
-
-# Lancement officiel adapté à Render
-app = ft.app(target=main, view=ft.AppView.WEB_BROWSER)
+ft.app(target=main, view=ft.AppView.WEB_BROWSER, port=int(os.environ.get("PORT", 8080)))
