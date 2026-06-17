@@ -225,4 +225,4 @@ def main(page: ft.Page):
     afficher_ecran_connexion()
 
 # Lancement officiel adapté à Render
-ft.app(target=main, view=ft.AppView.WEB_BROWSER, host="0.0.0.0", port=10000)
+app = ft.app(target=main, view=ft.AppView.WEB_BROWSER)
